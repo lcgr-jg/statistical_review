@@ -1,0 +1,1 @@
+from .bpipe import BBGQuery

@@ -1,0 +1,9 @@
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+statsmodels>=0.14
+pyarrow>=14.0
+matplotlib>=3.7
+ipykernel>=6.0
+# Bloomberg Python API (not on public PyPI for all Python versions):
+#   pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple/ blpapi

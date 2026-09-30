@@ -1,0 +1,27 @@
+
+Bloomberg Excel BDH Formulas — paste these into your Bloomberg Excel workbook:
+
+=== OHLCV Daily Data ===
+Cell A1: =BDH("ESA Index","PX_OPEN,PX_HIGH,PX_LOW,PX_LAST,VOLUME","20250414","20260414","per=cd")
+
+=== Intraday (if you have BDH intraday access) ===
+Cell A1: =BDH("ESA Index","PX_OPEN,PX_HIGH,PX_LOW,PX_LAST,VOLUME","20250414","20260414","per=hr")
+
+=== Enrichment Snapshot ===
+Current Price:      =BDP("ESA Index","PX_LAST")
+Implied Vol:        =BDP("ESA Index","IVOL_MID")
+Open Interest:      =BDP("ESA Index","OPEN_INT")
+52W High:           =BDP("ESA Index","HIGH_52WEEK")
+52W Low:            =BDP("ESA Index","LOW_52WEEK")
+Beta:               =BDP("ESA Index","EQY_BETA")
+Volume Today:       =BDP("ESA Index","VOLUME")
+ATR (manual):       Use BDH to pull 14 days of highs/lows/closes, then calculate
+
+=== Commitment of Traders (if applicable) ===
+Net Non-Commercial: =BDP("CFTCES Index","NET_NON_COMMERCIAL_POSITION")
+
+=== After Export ===
+1. Copy the data range
+2. Paste Special > Values to remove Bloomberg links
+3. Save as CSV with headers: date,open,high,low,close,volume
+4. Use csv_loader.py to load into the backtester

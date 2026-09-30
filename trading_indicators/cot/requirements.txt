@@ -1,0 +1,5 @@
+cot_reports
+yfinance
+pandas
+matplotlib
+pyarrow
