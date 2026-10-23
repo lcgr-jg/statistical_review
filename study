@@ -1,0 +1,118 @@
+# Project: Equity Index Spread Library for Macro Expression
+
+## Context
+I work on a global macro desk. I want a research library that maps macro shocks to equity
+index spreads (and their volatility), so I can answer: "Given this macro move or regime,
+which spreads historically respond most reliably, and is it cheaper to express via delta
+or via options?"
+
+This repo already contains a library with Bloomberg API access. DO NOT write a new blpapi
+wrapper. Reuse the existing one.
+
+## Phase 0 — Inspect and propose (STOP after this phase and wait for my approval)
+1. Explore the repo and find the Bloomberg access layer. Summarise: how to request
+   historical data (BDH-equivalent), reference data (BDP-equivalent), any caching,
+   date handling, and rate-limit/error handling it already does.
+2. Check existing conventions: project structure, config format, testing framework,
+   logging, linting, Python version, dependency management.
+3. Propose: module layout, data flow, cache design, and a list of open questions.
+   Do not write implementation code yet.
+
+## Phase 1 — Config-driven spread definitions and data layer
+Create a YAML config where each spread is defined declaratively, e.g.:
+
+```yaml
+- id: nt_ratio
+  name: "TOPIX vs Nikkei 225"
+  long: {ticker: "TPX Index", tr_ticker: null}
+  short: {ticker: "NKY Index", tr_ticker: null}
+  region: JP
+  currency: JPY
+  themes: [boj_normalisation, jpy, japan_banks]
+  expected_drivers: {jgb_10y: +, usdjpy: -}   # hypothesis only; to be tested
+  sizing_default: beta_neutral
+  vol_legs: {long: null, short: "VNKY Index"}
+```
+
+Starter spreads to include (VERIFY every ticker via the existing library; produce a report
+of tickers that fail or return sparse data rather than silently skipping them):
+- US: S&P cyclicals basket (S5INDU, S5MATR) vs defensives (S5CONS, S5UTIL); RTY vs SPX;
+  SPW (equal weight) vs SPX; NDX vs SPX; S5FINL vs S5UTIL; KRE vs S5FINL; XHB vs SPX;
+  SOX vs SPX; S5ENRS vs S5COND; Dow Transports (TRAN) vs Dow Utilities (UTIL)
+- Europe: SX7E vs SX6P; FTSEMIB vs DAX; MDAX vs DAX; SMI vs SX5E; SXPP vs SXXP
+- Japan: TPX vs NKY; TOPIX banks vs TPX
+- UK: MCX (FTSE 250) vs UKX
+- Global: MXEF vs SPX; HSCEI vs SPX; IBOV vs MXEF; AS51 vs SPX
+
+Data layer requirements:
+- Fetch via the existing Bloomberg library; cache to parquet, keyed by ticker/field/date
+  range. Incremental updates only fetch missing dates.
+- Bloomberg has data limits: batch requests, never refetch cached data, log request counts.
+- Total return vs price: legs must be on a consistent basis. Prefer total return indices
+  (note DAX is already total return; DAXK is price). Flag any spread mixing bases.
+- Currency: support local (FX-hedged approximation) and USD-converted versions.
+- Calendar alignment: handle different holidays and asynchronous closes. Asia closes
+  before US data releases, so for cross-region spreads and US event studies, provide
+  next-day alignment for Asian legs. Document the choice explicitly.
+
+## Phase 2 — Spread construction and sizing
+Support three sizing methods: notional-neutral, beta-neutral (rolling beta of long leg
+to short leg, lagged to avoid lookahead), and vol-neutral (inverse realised vol, lagged).
+Output daily spread return series and a cumulative index for each method.
+
+## Phase 3 — Macro factor sensitivity
+Factor set (verify tickers): USGG2YR, USGG10YR, US 10y real yield (USGGT10Y),
+10y breakeven (USGGBE10), 2s10s slope (derived), DXY, CL1 Comdty, HG1 Comdty,
+USDJPY Curncy, HY credit spread (LF98OAS), GDBR10, GJGB10, CESIUSD (US data surprise).
+- Rolling regressions (63d, 126d, 252d windows) of spread returns on factor changes.
+  Output betas, t-stats, R², and a chart showing beta stability over time.
+- Flag spreads whose sign of beta flips across regimes; this is a feature, not noise.
+- Compare tested betas against the hypothesised `expected_drivers` in the config.
+
+## Phase 4 — Event studies and regime conditioning
+Events: US CPI, NFP, FOMC, ECB, BoJ, BoE decisions. Pull actual vs survey median from
+Bloomberg economic release data where available; central bank dates from a config file
+I can maintain. Compute surprise = actual − consensus, standardised.
+- Forward spread returns at t+1, t+5, t+20, bucketed by surprise sign and size.
+- Report hit rate, mean, median, payoff ratio, and number of observations. Always show N.
+- Daily shock classifier (the "2x2"): label each day by sign of 10y yield change and SPX
+  change (growth / hawkish / dovish / risk-off), with a breakeven vs real yield split.
+  Report each spread's average behaviour per quadrant.
+- Regime tags: inflation (CPI YoY above/below 3%), Fed cycle (hiking/cutting/hold from
+  fed funds), dollar trend (DXY vs 200d MA), stock-bond correlation sign (rolling 63d),
+  vol regime (VIX percentile). Condition all results on these.
+
+## Phase 5 — Volatility angle
+Vol tickers to verify: VIX, V2X, VXN, RVX, VNKY, plus single-index ATM and 25-delta
+implied vols via the appropriate Bloomberg fields (look up correct field names; do not
+guess). Include an implied correlation index (e.g. COR3M Index) if available.
+1. Implied vol spreads as trades: e.g. V2X − VIX, VXN − VIX, RVX − VIX. Z-scores,
+   mean-reversion half-life, and their own macro factor betas.
+2. Vol regime conditioning: does each spread's macro sensitivity change when VIX is in
+   its top quintile? Report results split by vol regime.
+3. Implied vs realised for the spread: estimate implied spread vol from leg implied vols
+   and an assumed correlation, σ² = σa² + σb²·h² − 2ρσaσb·h (h = hedge ratio),
+   compare with realised spread vol, and back out the correlation implied by the market
+   where the data allows.
+4. Event pricing: for each event type, compare the implied move priced before the event
+   (from short-dated ATM vol) with the realised move afterwards, per index. This tells
+   me when options are cheap relative to how much the market actually moves.
+5. Skew as a signal: does 25-delta put skew steepening lead underperformance of
+   high-beta legs?
+
+## Phase 6 — Outputs
+- "Spread card" per spread (HTML or markdown): composition notes, cumulative chart,
+  factor betas over time, event reaction table, regime table, vol profile, warnings.
+- Summary heatmaps: spreads × factors (betas), spreads × events (t+5 reaction).
+- Playbook query function: given a scenario such as
+  `{"us_2y": "up", "spx": "down", "dxy": "up"}` or a regime filter, rank spreads by
+  historical conditional response, with hit rate, N, and a confidence flag.
+
+## Engineering requirements
+- Type hints, docstrings, logging. Follow repo conventions found in Phase 0.
+- No lookahead: every rolling estimate used for sizing or signals must be lagged.
+- Unit tests using synthetic data so tests run without a Bloomberg connection.
+- Never hardcode credentials. Never modify the existing Bloomberg library; wrap it.
+- Keep analytics separate from data access so data sources can be swapped later.
+- After each phase, summarise what was built, what assumptions were made, and what
+  I should check before moving on.

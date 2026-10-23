@@ -1,0 +1,166 @@
+# Project: Crude & Refined Products Macro and Volatility Platform
+
+## Context
+I work on a crude and refined products desk. I want a research platform that connects
+oil fundamentals with macro, cross-asset markets and volatility. It should answer:
+- "What is the market pricing for OPEC+ decisions, and how does the outcome compare?"
+- "What are cracks and time spreads telling me about global growth and physical
+  tightness, and does that agree with macro data?"
+- "How do oil shocks transmit into breakevens, central bank pricing, FX and equities,
+  and how stable are those links across regimes?"
+- "Is oil vol cheap or rich versus realised, versus history, and versus related markets?"
+- "What does my book's risk look like this morning, and where did yesterday's P&L come from?"
+
+This repo already contains a library with Bloomberg API access. DO NOT write a new
+blpapi wrapper. Reuse the existing one.
+
+## Phase 0 — Inspect and propose (STOP after this phase and wait for my approval)
+1. Find the Bloomberg access layer. Summarise how to request historical, reference and
+   bulk data, and what caching, rate limiting and error handling already exist.
+2. Check repo conventions: structure, config format, testing, logging, linting,
+   Python version, dependency management. Note any existing fundamentals models or
+   data pipelines that this project should reuse rather than duplicate.
+3. Propose: module layout, SQL schema, data flow, open questions. No implementation yet.
+
+## Phase 1 — Storage and data layer (SQL)
+- SQLAlchemy with SQLite by default, Postgres-ready via config.
+- Tables: `instruments`, `timeseries` (long format: ticker, field, date, value, source,
+  fetched_at), `events` (type, datetime, actual, consensus/expectation, prior),
+  `opec_meetings`, `geopolitical_events`, `positions`, `fundamentals` (reference date
+  AND publication date), `fetch_log`.
+- Incremental fetches only; batch requests; log request counts (Bloomberg data limits).
+- Store publication dates so analytics never use data early (EIA weekly data releases
+  Wednesday for the prior week; CFTC is as of Tuesday, released Friday; IEA/OPEC/EIA
+  monthly reports publish with lags and get revised — store vintages where possible).
+- Session alignment: ICE Brent, NYMEX WTI, Singapore products and FX closes differ.
+  Make snapshot time configurable and document the choice.
+- Ticker verification report: every configured ticker and field is tested; failures
+  and sparse series are listed, never silently skipped.
+
+## Phase 2 — Instrument universe (config-driven YAML)
+Verify every ticker; where marked "look up", find the correct ticker or field rather
+than guessing.
+- Crude: CO1–CO24 Comdty (Brent), CL1–CL24 Comdty (WTI); Dubai, Murban and WCS (look up)
+- Products: XB1 (RBOB), HO1 (NY Harbor ULSD), QS1 (ICE gasoil) Comdty; jet fuel,
+  naphtha and high/low sulphur fuel oil in NWE and Singapore (look up)
+- Gas: NG1 Comdty, TTF and JKM (look up)
+- Derived series (computed, not fetched): calendar spreads (M1–M2, M1–M7, Dec–Dec),
+  Brent–WTI, Brent–Dubai, 3-2-1 crack, gasoline and diesel/gasoil cracks vs Brent,
+  gasoil–Brent and RBOB–Brent term structures
+- Fundamentals: EIA weekly crude, Cushing, gasoline and distillate stocks, refinery
+  utilisation, implied product demand; US SPR stocks; Baker Hughes oil rig count;
+  ARA and Singapore product stocks; tanker freight indices (dirty and clean) (look up)
+- Positioning: CFTC managed money (WTI, RBOB, ULSD) and ICE COT (Brent, gasoil) (look up)
+- Macro and cross-asset: USGG2YR, USGG10YR, USGGT10Y, US 2y and 10y breakevens and
+  1y inflation swap (look up), DXY, USDCAD, USDNOK, USDMXN, USDCOP, USDJPY, USDINR,
+  USDKRW, EURUSD, SPX, S&P energy sector, airlines index, refiner equities (e.g. VLO,
+  MPC, PSX), HY energy credit spread (look up), VIX, MOVE, economic surprise indices,
+  global manufacturing PMIs (look up)
+- Vol: OVX Index; ATM, 25-delta risk reversal and butterfly implied vols for Brent and
+  WTI at 1M/3M/6M (look up fields); products vol where available (flag gaps)
+
+## Phase 3 — OPEC+ and policy reaction function
+- Maintain a meeting log (config): date, expectation going in (manual input, with
+  source), decision, and classification of outcome vs expectation (bigger, in line,
+  smaller, surprise direction).
+- Event study: Brent outright, M1–M7 spread, Brent–Dubai and vol at t+1, t+5, t+20,
+  by outcome-vs-expectation bucket. Report hit rate, mean, median, payoff ratio and N.
+- Pre-meeting positioning: did curve structure, CFTC/ICE positioning and implied vol
+  move ahead of the meeting? Is positioning predictive of the reaction?
+- Extend the same framework to SPR announcements, sanctions events and major
+  geopolitical events (manual event log with source and timestamp).
+
+## Phase 4 — Fundamentals and physical tightness
+- Tightness dashboard: inventories vs 5-year range and in days of demand; time spreads
+  vs inventory (fitted relationship with residuals as a rich/cheap signal); Brent–WTI
+  vs Cushing and export economics; refinery utilisation and margins.
+- Global balance sheet: supply (OPEC+ by member, US shale, Brazil, Guyana, Canada,
+  other non-OPEC), demand by region and product, refinery runs, implied stock change.
+  Most inputs are manual from IEA, EIA STEO and OPEC MOMR: build input templates with
+  source, publication date and vintage columns, and validate on load.
+- Scenario-driven: e.g. "OPEC+ unwinds 500 kb/d", "China demand −300 kb/d",
+  "US shale +200 kb/d". Output implied balance and stock path changes.
+- Product balances: regional cracks and stocks (US Gulf, NWE, Singapore), with refinery
+  outages and seasonal patterns (driving season, heating season, turnarounds).
+- Confirmation table: do fundamentals and flows agree with the macro signal? Flag
+  disagreements rather than averaging them away.
+
+## Phase 5 — Oil as a macro indicator
+- Growth nowcast: test whether diesel/gasoil cracks and freight lead or confirm PMIs,
+  industrial production and economic surprise indices, by region. Rolling correlations,
+  lead-lag analysis and out-of-sample tests.
+- Consumer signal: gasoline cracks and implied demand vs consumer data.
+- Daily shock classifier: label each day by sign of US 10y change and SPX change,
+  split into real yield vs breakeven driven, with an oil overlay. Report how crude,
+  spreads and cracks behave per regime.
+- Regime tags: inflation regime, Fed cycle, dollar trend, VIX and MOVE percentile,
+  curve structure (backwardation vs contango), OPEC+ policy stance (manual config).
+  Condition all results on regime.
+
+## Phase 6 — Oil's transmission to the rest of macro
+- Oil to inflation pricing: sensitivity of 1y inflation swaps and 2y breakevens to
+  Brent and gasoline moves; how that sensitivity varies by inflation regime.
+- Oil to central bank pricing: does oil shift front-end rates and meeting-dated
+  pricing, and when? (e.g. only when inflation is above target)
+- Terms-of-trade FX: rolling betas of CAD, NOK, MXN, COP (exporters) and JPY, INR,
+  KRW, EUR (importers) to oil, split by supply-driven vs demand-driven oil moves
+  (proxy: oil and equities moving in opposite vs same direction). Include an
+  exporter-minus-importer FX basket.
+- Equity bridge: energy sector vs SPX, airlines vs energy, refiner equities vs cracks
+  (do equity investors validate the margin move?), HY energy credit spreads vs crude
+  and time spreads.
+- Credit and micro: shale and integrated producer scorecard via Bloomberg fundamental
+  fields (look up): net debt/EBITDA, interest cover, capex and guidance, free cash
+  flow, hedge book coverage where disclosed. Estimate which producers cut activity
+  first under price scenarios using breakeven costs (manual input).
+
+## Phase 7 — Volatility
+1. Surface monitor: Brent and WTI ATM term structure, risk reversals and butterflies;
+   percentiles vs history and heatmaps of changes.
+2. Skew regimes: identify periods when skew flips to calls (geopolitical supply risk)
+   vs puts (demand fear); study what follows for spot, spreads and realised vol.
+3. Variance risk premium: implied minus subsequently realised, by tenor and regime,
+   with correctly lagged windows.
+4. Event vol: implied vs realised moves around OPEC+ meetings, EIA weekly reports,
+   CPI and FOMC.
+5. Cross-asset vol RV: OVX vs VIX, crude vol vs USDCAD and USDNOK vol, crude vol vs
+   MOVE. Rolling regressions with residual z-scores as rich/cheap signals.
+6. Vol vs curve structure: relationship between implied vol and backwardation depth.
+7. Flag data gaps explicitly (products vol history may be sparse); never interpolate
+   silently.
+
+## Phase 8 — Risk module
+- Positions in SQL: outright futures, calendar spreads, cracks, inter-commodity spreads,
+  and options (Black-76 on futures).
+- Risk: delta by contract month and in spread terms, gamma, vega by expiry, theta.
+- Daily P&L attribution: outright, curve shape (PCA on the futures curve: level, slope,
+  curvature), cracks, vol, theta, unexplained residual (flag large residuals).
+- Stress grid: spot ±5/10/20% × vol ±5/10 points, plus named scenarios, e.g.
+  "Hormuz disruption: Brent +25%, backwardation +$5 M1–M7, call skew +5",
+  "demand recession: Brent −20%, contango, diesel cracks −30%",
+  "Gulf hurricane: products +15%, crude −3%", "OPEC+ surprise unwind".
+- Synthetic example book so the module can be demonstrated end to end.
+
+## Phase 9 — Outputs
+- Morning dashboard (single HTML page): overnight moves, curve and spread changes,
+  cracks, tightness signals, positioning extremes, vol percentiles and skew, macro
+  transmission (breakevens, FX), today's events with consensus and implied event move,
+  and risk summary.
+- Cards per market (Brent, WTI, gasoline, diesel/gasoil, jet): drivers, event
+  reactions, regimes, fundamentals and flows, vol profile, warnings.
+- Playbook query: given a scenario such as
+  `{"brent": "up", "spx": "down", "brent_m1m7": "widening", "call_skew": "up"}`
+  or a regime filter, rank oil spreads, cracks, FX, inflation and vol trades by
+  historical conditional response, with hit rate, N and a confidence flag.
+
+## Engineering requirements
+- Type hints, docstrings, logging; follow repo conventions found in Phase 0.
+- No lookahead: rolling estimates lagged; fundamentals, positioning and reports used
+  only from publication date, using the vintage available at the time.
+- Unit tests with synthetic data (no Bloomberg needed). Test Black-76 pricing and
+  greeks against known values; test spread and crack construction (units: $/bbl vs
+  cents/gal vs $/tonne conversions).
+- Never hardcode credentials. Never modify the existing Bloomberg library; wrap it.
+- Keep analytics separate from data access.
+- After each phase, summarise what was built, assumptions made, and what I should
+  verify before moving on.

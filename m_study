@@ -1,0 +1,156 @@
+# Project: Metals Macro & Volatility Research Platform
+
+## Context
+I'm preparing for a Commodities Macro Analyst role on a metals-focused desk
+(base and precious metals, with significant options/vol exposure). I want a research
+platform that connects top-down macro, bottom-up fundamentals, producer credit health,
+volatility, and daily risk. It should answer questions like:
+- "Given this macro shock or regime, how have gold, silver, copper and aluminium
+  historically responded, and how reliable is that response?"
+- "Is metals vol cheap or rich versus realised, versus history, and versus related FX
+  and rates vol?"
+- "What are physical tightness, positioning and flows telling me, and do they confirm
+  or contradict the macro signal?"
+- "What does my options book's risk look like this morning, and where did yesterday's
+  P&L come from?"
+
+This repo already contains a library with Bloomberg API access. DO NOT write a new
+blpapi wrapper. Reuse the existing one.
+
+## Phase 0 — Inspect and propose (STOP after this phase and wait for my approval)
+1. Find the Bloomberg access layer. Summarise how to request historical data
+   (BDH-equivalent), reference data (BDP-equivalent), bulk data (BDS-equivalent),
+   and what caching, rate limiting and error handling already exist.
+2. Check repo conventions: structure, config format, testing framework, logging,
+   linting, Python version, dependency management.
+3. Propose: module layout, SQL schema, data flow, and open questions.
+   No implementation code yet.
+
+## Phase 1 — Storage and data layer (SQL)
+- Use SQLAlchemy with SQLite by default, written so Postgres can be swapped in via config.
+- Proposed tables: `instruments` (ticker, asset class, metadata, data basis),
+  `timeseries` (long format: ticker, field, date, value, source, fetched_at),
+  `events` (type, datetime, actual, consensus, prior), `positions`,
+  `fundamentals` (manual and Bloomberg inputs with source and publication date),
+  `fetch_log`.
+- Incremental updates only fetch missing dates. Bloomberg has data limits: batch
+  requests, never refetch cached data, log request counts per run.
+- Store PUBLICATION date as well as reference date for every fundamental and positioning
+  series, so analytics can avoid lookahead. Examples: CFTC data is as of Tuesday but
+  released Friday; inventory and trade data publish with lags.
+- Trading session alignment: LME, COMEX and SHFE close at different times. Document
+  the alignment choice and make it configurable.
+- Include a ticker verification report: every configured ticker and field is tested,
+  and failures or sparse series are listed, never silently skipped.
+
+## Phase 2 — Instrument universe (config-driven, YAML)
+Verify every ticker below through the existing library; correct or flag as needed.
+- Precious: XAU Curncy, XAG Curncy, GC1 Comdty, SI1 Comdty, PL1 Comdty, PA1 Comdty
+- Base (LME 3-month and cash): copper LMCADS03 / LMCADY, aluminium LMAHDS03,
+  nickel LMNIDS03, zinc LMZSDS03; COMEX copper HG1 Comdty; SHFE copper front month
+  (look up the correct ticker)
+- Macro factors: USGG2YR, USGG10YR, US 10y real yield (USGGT10Y), 10y breakeven
+  (USGGBE10), DXY, USDCNH Curncy, AUDUSD Curncy, USDJPY Curncy, CL1 Comdty,
+  MOVE Index, VIX Index, CESIUSD (US data surprise), China data surprise index,
+  China manufacturing PMI (look up tickers for the last two)
+- Vol: GVZ Index; ATM, 25-delta risk reversal and butterfly implied vols for gold and
+  copper options at 1M/3M/6M (LOOK UP correct Bloomberg fields, do not guess);
+  FX vol: EURUSDV1M, USDJPYV1M, AUDUSDV1M, USDCNHV1M Curncy plus 25-delta risk
+  reversals and butterflies (verify)
+
+## Phase 3 — Top-down macro sensitivity
+- Rolling regressions (63d, 126d, 252d) of each metal's returns on factor changes.
+  Betas, t-stats, R², and beta stability charts.
+- Specific study: gold vs real yields over time. Quantify the breakdown of the
+  relationship and test what explains the residual (dollar, central bank buying,
+  geopolitical risk proxies, ETF flows).
+- Copper vs China: relationship with China PMI, CNH, China data surprises, and
+  Chinese property equities.
+- Event studies: US CPI, NFP, FOMC, plus China data releases. Forward returns at
+  t+1, t+5, t+20 by surprise sign and size. Report hit rate, mean, median, payoff
+  ratio and N for every result.
+- Regime tags: inflation regime, Fed cycle, dollar trend (DXY vs 200d MA), vol regime
+  (VIX and MOVE percentiles), China policy stance (manual config). Condition all
+  results on regime.
+- Daily shock classifier: label each day by sign of 10y yield change and SPX change,
+  split into real yield vs breakeven driven. Report each metal's behaviour per regime.
+
+## Phase 4 — Bottom-up fundamentals and flow of funds
+- Physical tightness dashboard: LME, COMEX and SHFE inventories (look up tickers),
+  LME cash-to-3M spreads, combined visible stocks in days of consumption.
+- Positioning and flows: CFTC managed money net positioning (gold, silver, copper),
+  gold and silver ETF holdings, central bank gold purchases (likely a manual quarterly
+  input file). Z-scores and extremes.
+- Copper supply/demand balance sheet: supply (mine production, refined production,
+  scrap), demand (China apparent consumption, rest of world, end-use split),
+  implied balance, and change in inventories. Much of this data is not on Bloomberg:
+  build clean CSV/Excel input templates with source and publication date columns,
+  and validate inputs on load.
+- Make the balance sheet scenario-driven: e.g. "mine disruption rate +2pp",
+  "China grid investment −10%". Output the implied balance change.
+- Confirmation table: for each metal, does fundamentals/flow agree or disagree with
+  the macro signal? Disagreements are flagged, not averaged away.
+
+## Phase 5 — Credit and micro
+- Universe (config, verify tickers): major copper and diversified miners (e.g. FCX,
+  BHP, Rio Tinto, Glencore, Anglo American, Southern Copper, Antofagasta), gold miners
+  (e.g. Newmont, Barrick, Agnico Eagle), aluminium producers (e.g. Alcoa, Norsk Hydro).
+- Pull balance sheet metrics via Bloomberg fundamental fields (look up correct field
+  names): net debt/EBITDA, interest cover, liquidity, capex and capex guidance,
+  free cash flow. Pull CDS or bond spreads where available.
+- Cost-curve proxy: map approximate producer all-in costs (manual input) against spot
+  to estimate which producers are under margin pressure at given price levels.
+- Output: a credit health scorecard per producer and a "who cuts first" ranking under
+  price scenarios.
+
+## Phase 6 — Volatility
+1. Surface monitor: ATM term structure, risk reversals and butterflies for gold and
+   copper; percentile vs history.
+2. Variance risk premium: implied vol minus subsequently realised vol, by metal,
+   tenor and regime. Use correctly lagged realised windows.
+3. Event vol: implied move priced before FOMC and CPI vs realised move afterwards,
+   for gold and copper.
+4. Cross-asset vol RV: gold vol vs USDJPY and EURUSD vol; copper vol vs AUDUSD and
+   USDCNH vol; metals vol vs MOVE. Rolling correlations, ratio z-scores, and a
+   regression-implied fair value with residuals.
+5. Skew signals: does gold call skew or copper put skew lead spot moves or
+   realised vol changes?
+6. Note data quality issues explicitly: historical options data for metals can be
+   patchy. Report gaps and do not interpolate silently.
+
+## Phase 7 — Risk module
+- Positions table in SQL (futures and options; strike, expiry, type, quantity).
+- Price futures options with Black-76. Compute delta, gamma, vega, theta per position
+  and aggregated.
+- Daily P&L attribution: delta, gamma, vega, theta, and unexplained residual. Large
+  unexplained P&L must be flagged.
+- Stress grid: spot ±2/5/10% × vol ±2/5/10 points, plus named scenarios
+  (e.g. "dollar +3%, real yields +25bp", "China stimulus: copper +8%, vol −3").
+- Include a synthetic example book so the module can be demonstrated end to end.
+
+## Phase 8 — Equity bridge module (keep this small)
+Equity spreads that link directly to metals: GDX vs GLD, GDXJ vs GDX, COPX vs HG1,
+FCX vs HG1, Chinese property equities vs copper (look up a suitable index).
+- Use them as confirmation signals: do equity investors validate the metal move?
+- Same factor regression and event study machinery as Phase 3.
+
+## Phase 9 — Outputs
+- Morning dashboard (single HTML page): overnight moves, physical tightness, positioning
+  extremes, vol percentiles, today's events with consensus, and risk summary.
+- Metal card per metal: macro betas over time, event reactions, regime table,
+  fundamentals and flows, vol profile, warnings.
+- Playbook query: given a scenario such as
+  `{"us_real_yield": "up", "dxy": "up", "china_pmi_surprise": "positive"}` or a regime
+  filter, rank metals, vol trades and bridge spreads by historical conditional response,
+  with hit rate, N and a confidence flag.
+
+## Engineering requirements
+- Type hints, docstrings, logging. Follow repo conventions found in Phase 0.
+- No lookahead: rolling estimates are lagged; fundamentals and positioning are used
+  only from their publication date.
+- Unit tests with synthetic data so tests run without a Bloomberg connection.
+  Test Black-76 pricing and greeks against known values.
+- Never hardcode credentials. Never modify the existing Bloomberg library; wrap it.
+- Keep analytics separate from data access.
+- After each phase, summarise what was built, assumptions made, and what I should
+  verify before moving on.
